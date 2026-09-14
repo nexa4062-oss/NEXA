@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: sovereign_ai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./database/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sovereign-net
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - sovereign-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/sovereign_ai
+      VECTOR_DB_URL: http://qdrant:6333
+      OLLAMA_URL: http://host.docker.internal:11434
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      AIR_GAPPED_MODE: "true"
+      ENVIRONMENT: production
+    extra_hosts:
+      # host.docker.internal only resolves automatically on Docker
+      # Desktop (Mac/Windows). On Linux this mapping is required, or
+      # every request to Ollama fails and Model Control always shows
+      # "Model test failed".
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - upload_data:/app/data/uploads
+      - generated_data:/app/data/generated
+    networks:
+      - sovereign-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - sovereign-net
+
+volumes:
+  pgdata:
+  qdrant_data:
+  upload_data:
+  generated_data:
+
+networks:
+  sovereign-net:
+    driver: bridge
+    internal: false
